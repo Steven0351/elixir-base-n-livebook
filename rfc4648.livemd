@@ -1,0 +1,981 @@
+# Rolling your own Base-N Encoder in Elixir
+
+*This post is available as a Livebook [at this github url]()*.
+
+## Background
+
+*If you'd rather go straight to the code and skip over this introduction, jump straight to the [Base 64 implementation](#section-ov6uzy4ssq47vw3pssijbolxhguq5cv7)*
+
+A little over a year ago, I attempted to roll my own Base 32 encoder in [Swift](https://swift.org/) (I'm an iOS developer professionally). I found the [IETF specification](https://datatracker.ietf.org/doc/html/rfc4648) and set out to implement it. I eventually gave up because the methods of manipulating binary data in Swift are terse, hard to understand, and overall pretty verbose.
+
+Not long after I gave up on that exercise I discovered Elixir and found it's pattern matching facilities to be an extremely power feature of the language. If you're familiar with pattern matching in other functional languages like [Haskell](http://learnyouahaskell.com/syntax-in-functions), Elixir allows you to pattern match in the **function head**. If you're unfamiliar with what that means, here's a contrived example:
+
+```elixir
+defmodule Contrived do
+  def two?(2), do: true
+  def two?(_), do: false
+end
+
+ExUnit.start(autorun: false)
+
+defmodule Contrived.Tests do
+  use ExUnit.Case, async: true
+
+  test "two?/1" do
+    assert Contrived.two?(2)
+    refute Contrived.two?(3)
+  end
+end
+
+ExUnit.run()
+```
+
+Elixir's pattern matching also allows you to destructure it's various data types through pattern matching as well.
+
+```elixir
+defmodule AlsoContrived do
+  def two_in_tuple?({_, 2}), do: true
+  def two_in_tuple?({2, _}), do: true
+  def two_in_tuple?(_tuple), do: false
+
+  def hello_key_with_world_value?(%{hello: "world"}), do: true
+  def hello_key_with_world_value?(_map), do: false
+end
+
+ExUnit.start(autorun: false)
+
+defmodule AlsoContrived.Tests do
+  use ExUnit.Case, async: true
+
+  test "two_in_tuple?/1" do
+    assert AlsoContrived.two_in_tuple?({1, 2})
+    assert AlsoContrived.two_in_tuple?({2, 1})
+    refute AlsoContrived.two_in_tuple?({1, 1})
+  end
+
+  test "hello_key_with_world_value?/1" do
+    assert AlsoContrived.hello_key_with_world_value?(%{hello: "world", data: 1})
+    refute AlsoContrived.hello_key_with_world_value?(%{goodbye: "world"})
+  end
+end
+
+ExUnit.run()
+```
+
+However, what I found unique about Elixir's pattern matching was the ability to match on *binary data*.
+
+```elixir
+defmodule BinaryMatching do
+  # 1
+  def add_bits(<<a::4, b::4>>), do: a + b
+end
+
+ExUnit.start(autorun: false)
+
+defmodule BinaryMatching.Tests do
+  use ExUnit.Case, async: true
+
+  test "add_bits/1" do
+    # 2
+    binary = <<1::1, 1::1, 1::1, 1::1, 0::1, 1::1, 0::1, 1::1>>
+    # 3
+    assert BinaryMatching.add_bits(binary) == 20
+  end
+end
+
+ExUnit.run()
+```
+
+Let's breakdown what's going on by the numbers. This is how I will break down code examples in the rest of the post as well.
+
+1. Here we define a function where we split a byte in half, which are assigned to `a` and `b` respectively in the function head. The `::` specifies the size in bits. So both `a` and `b` are required to be 4 bits wide. Yes, those are terrible names for variables, but if you can figure out more descriptive names for naming chunks of binary data let me know!
+2. Here in our test, we assign a bitstring to the variable `binary`. Again the `::` specifies the size in bits. This translates to a literal binary string of `11110101`.
+3. We pass the binary to our `add_bits/1` function...and it equals 20? Let's break down *exactly* what is happening in some pseudocode:
+```elixir
+add_bits(11110101)
+#
+# Split the binary into the bits that match
+add_bits(a = 1111, b = 0101)
+#
+# Convert the split bits into decimal
+add_bits(a = 15, b = 5)
+#
+# Add Them together
+15 + 5 = 20
+```
+
+Being able to manipulate binary data in this manner makes it much more approachable to do something crazy like roll your own encoders and decoders for Base 64, 32, and 16!
+
+## IETF RFC 4648
+
+Well, if you're like me before I became a masochist, the title of this section looks like a cat walked on my keyboard while I was writing this. The **I**nternet **E**ngineering **T**ask **F**orce is the standards body that comes up with all sorts of stuff that we depend on every day. [RFC 4648](https://datatracker.ietf.org/doc/html/rfc4648) is the formal specification for Base-N encoding.
+
+### Disclaimer
+
+Elixir already has all of these encodings available in the standard library in the `Base` module. However, I have not referenced the implementation because I like to punish myself for the sake of my own education and I wanted to approach this exercise from first principles.
+
+I'm also not a regular contributor or participant in the wider Elixir community, so my personal style of writing Elixir may annoy or outright offend you.
+
+## Base 64
+
+### Encoding
+
+[RFC 4648](https://tools.ietf.org/html/rfc4648) lays out very explicit rules for encoding (emphasis my own):
+
+> The encoding process represents **24-bit** groups of input bits as output
+> strings of **4 encoded characters**.  Proceeding from left to right, a
+> 24-bit input group is **formed by concatenating 3 8-bit** input groups.
+> These 24 bits are then treated as **4 concatenated 6-bit groups**, each
+> of which is translated into a single character in the base 64
+> alphabet.
+> 
+> Each 6-bit group is used as an index into an array of 64 printable
+> characters.  The character referenced by the index is placed in the
+> output string.
+
+Let's go ahead and turn this part of the specification into Elixir code.
+
+<!-- livebook:{"force_markdown":true} -->
+
+```elixir
+defmodule Base64 do
+  import Bitwise # 1
+
+  # 2
+  @encoding_table %{
+     0 => "A",  1 => "B",  2 => "C",  3 => "D",  4 => "E",  5 => "F",  6 => "G",  7 => "H",
+     8 => "I",  9 => "J", 10 => "K", 11 => "L", 12 => "M", 13 => "N", 14 => "O", 15 => "P",
+    16 => "Q", 17 => "R", 18 => "S", 19 => "T", 20 => "U", 21 => "V", 22 => "W", 23 => "X",
+    24 => "Y", 25 => "Z", 26 => "a", 27 => "b", 28 => "c", 29 => "d", 30 => "e", 31 => "f",
+    32 => "g", 33 => "h", 34 => "i", 35 => "j", 36 => "k", 37 => "l", 38 => "m", 39 => "n",
+    40 => "o", 41 => "p", 42 => "q", 43 => "r", 44 => "s", 45 => "t", 46 => "u", 47 => "v",
+    48 => "w", 49 => "x", 50 => "y", 51 => "z", 52 => "0", 53 => "1", 54 => "2", 55 => "3",
+    56 => "4", 57 => "5", 58 => "6", 59 => "7", 60 => "8", 61 => "9", 62 => "+", 63 => "/"
+  }
+
+  # 3
+  def encode(<<>>), do: <<>>
+
+  # 4
+  def encode(<<a::6, b::6, c::6, d::6>> <> rest) do
+    @encoding_table[a]
+      <> @encoding_table[b]
+      <> @encoding_table[c]
+      <> @encoding_table[d]
+      <> encode(rest)
+  end
+
+```
+
+1. We import `Bitwise` to get access to bitshifting operators. This will be important in later steps.
+2. We create a map to map our decimal values to their Base 64 alphabet representation (see [appendix](#Base-64-Encoding-Alphabet)). This could also work as a `List` since the keys themselves are exactly what the indices would be. However, making a `List` work for the [decoding](#Decoding) process would be cumbersome so I opted for uniformity between encoding and decoding.
+3. We handle the empty case. If we get any empty binary there is nothing to encode, so we return an empty binary.
+4. Now we get into the happy path. As emphasized in the specification, we split the 24-bit input group into 4 6-bit input groups via pattern matching and then use the value of each 6-bit input group to access our encoding value from our `@encoding_table`. We concatenate each lookup together and then concatenate the result of recursing into our encode function. 
+
+![gif that explains recursion by looping &#39;if you don&#39;t understand recursion, watch this GIF again&#39;](https://media.giphy.com/media/EHNsJZSBBKxaupNuX5/giphy.gif)
+
+Not every single piece of data is going to be evenly divisible in 24-bit chunks, so the specification lays out what we need to do in each case:
+
+> (1)  The final quantum of encoding input is an integral multiple of 24
+> bits; here, the final unit of encoded output will be an integral
+> multiple of 4 characters with no "=" padding.
+
+We already covered this case in #4 above:
+
+<!-- livebook:{"force_markdown":true} -->
+
+```elixir
+  def encode(<<a::6, b::6, c::6, d::6>> <> rest) do
+    @encoding_table[a]
+      <> @encoding_table[b]
+      <> @encoding_table[c]
+      <> @encoding_table[d]
+      <> encode(rest)
+  end
+```
+
+It's important to note that a 24-bit binary passed to this method will have an empty `rest`:
+
+```
+iex(1)> "foo" <> rest = "foo"
+"foo"
+iex(2)> rest
+""
+```
+
+Therefore, in a case where we have a binary evenly divisible by 24 bits, our final `encode/1` call will match on our empty case and concatenate an empty binary and terminate.
+
+> (2)  The final quantum of encoding input is exactly 8 bits; here, the
+> final unit of encoded output will be two characters followed by
+> two "=" padding characters.
+
+<!-- livebook:{"force_markdown":true} -->
+
+```elixir
+  # 6
+  def encode(<<a::6, b::2>>) do
+    @encoding_table[a]
+      <> @encoding_table[b <<< 4] # 7
+      <> "==" # 3
+  end
+```
+
+1. Here we reach one of our terminal cases. If our "final quantum of encoding" is 8 bits, then we split it into one 6-bit group and one 2-bit group.
+2. Buried deep in the [illustrations and examples section](https://datatracker.ietf.org/doc/html/rfc4648#section-9) of the spec, any input group that is less than 6 bits must be padded with empty bits before looking up the encoding value. Here, our final input group is only 2 bits wide, so we shift it left 4 bits using the left bitshift operator (`<<<`) to make it fill 6 bits.
+
+![gif illustrating how splitting an 8 bit group and then shifting the final 2 bit input group left 4 bits looks](https://media.giphy.com/media/EeHp96RxbfAXhwIPMQ/giphy.gif)
+
+3. We terminate the output with two "=" padding characters.
+
+Here's a step-by-step example of how the letter "g" would be encoded:
+```
+Binary Size            Binary          Decimal
+8-bit                  01100111        103
+6-bit (non-adjusted)   011001 11       25   3
+6-bit (adjusted)       100101 110000   37   48
+                                ^ 
+                                ^ 
+                                ^ padded with 4 0's to make the last word 
+                                6-bit instead of 2-bit
+Encoded Output       "lw=="
+```
+
+> (3)  The final quantum of encoding input is exactly 16 bits; here, the
+> final unit of encoded output will be three characters followed by
+> one "=" padding character.
+
+<!-- livebook:{"force_markdown":true} -->
+
+```elixir
+  # 8
+  def encode(<<a::6, b::6, c::4>>) do
+    @encoding_table[a]
+      <> @encoding_table[b]
+      <> @encoding_table[c <<< 2] # 9
+      <> "=" # 3
+  end
+```
+
+1. We reach another terminal case with our "final quantum of encoding" being 16 bits. We split that into two 6-bit groups and one 4-bit group through binary pattern matching.
+2. Just as in our 8-bit case preceding this one, we need to make our last input group fill 6 bits. Since this final input group is 4 bits wide, we shift if left 2 bits to make it fill 6 bits.
+
+![gif illustrating how splitting a 16 bit group and then shifting the final 4 bit input group left 2 bits looks](https://media.giphy.com/media/NYZ5g3UiV1PLp9FYPV/giphy.gif)
+
+3. We terminate the output with a single "=" padding character.
+
+That covers all the requirements for encoding!
+
+### Decoding
+
+The specification itself does not define the process for decoding, but it stands to reason that we just need to do everything in reverse.
+
+<!-- livebook:{"force_markdown":true} -->
+
+```elixir
+  # 10
+  @decoding_table %{
+    ?A =>  0, ?B =>  1, ?C =>  2, ?D =>  3, ?E =>  4, ?F =>  5, ?G =>  6, ?H =>  7,
+    ?I =>  8, ?J =>  9, ?K => 10, ?L => 11, ?M => 12, ?N => 13, ?O => 14, ?P => 15,
+    ?Q => 16, ?R => 17, ?S => 18, ?T => 19, ?U => 20, ?V => 21, ?W => 22, ?X => 23,
+    ?Y => 24, ?Z => 25, ?a => 26, ?b => 27, ?c => 28, ?d => 29, ?e => 30, ?f => 31,
+    ?g => 32, ?h => 33, ?i => 34, ?j => 35, ?k => 36, ?l => 37, ?m => 38, ?n => 39,
+    ?o => 40, ?p => 41, ?q => 42, ?r => 43, ?s => 44, ?t => 45, ?u => 46, ?v => 47,
+    ?w => 48, ?x => 49, ?y => 50, ?z => 51, ?0 => 52, ?1 => 53, ?2 => 54, ?3 => 55,
+    ?4 => 56, ?5 => 57, ?6 => 58, ?7 => 59, ?8 => 60, ?9 => 61, ?+ => 62, ?/ => 63
+  }
+```
+
+1. First we define our decoding table. If you're unfamiliar with the `?` prefix, this defines the code point for the character. Since we will be getting code points back during our decoding process, we'll use those to do our lookup.
+
+Decoding is much simpler than encoding, so I'll just define everything here in the same code block:
+
+<!-- livebook:{"force_markdown":true} -->
+
+```elixir
+  # 1
+  def decode!(<<>>), do: <<>>
+
+  # 2
+  def decode!(<<a>> <> "==") do
+    << @decoding_table[a] >>> 4::2 >>
+  end
+
+  # 3
+  def decode!(<<a>> <> "=") do
+    << @decoding_table[a] >>> 2::4 >>
+  end
+
+  # 4
+  def decode!(<<a>> <> rest) do
+    << @decoding_table[a]::6, decode(rest)::bitstring >>
+  end
+end
+```
+
+1. Just like in our encoding case, if we are given an empty binary to decode, we have nothing to decode so we return an empty binary. We'll define decode with an `!` because we cannot guarantee that we are being passed valid base 64 encoded data and we will not be handling that error.
+2. Here we match the case where our final input group was actually 2 bits before we shifted it left 4 bits and padded it with "==". A single ASCII character is 8-bits so we don't need to worry about specifying a bit-size when we pattern match. We take that ASCII code point that is provided to us during pattern matching, look up the value in our decoding table, shift it **right** 4 bits (because we shifted it left 4 bits in the encoding process), and then give it a size of 2 bits after we've decoded it.
+3. The same logic as #2 follows here as well, but with the 16-bit case during encoding. We look up the value from our ASCII code point again, shift it **right** 2 bits (because we shifted it left 2 bits in the encoding process) and then give it a size of 4 bits after we've decoded it.
+4. When we're not empty or we don't have any padding at the end the encoded data we've been passed, then we can safely look up our encoded value in the decoding table and give it a size of 6 bits. Finally, we recurse our `decode!/1` function and add it to the tail of our result. We are unable to use the concatenation operator (`<>`) here because it can only be used on binaries that are divisible by 8 bits. The `bitstring` size signals that this can be a binary of an arbitrary length.
+
+Altogether, the Base64 module should look like this:
+
+```elixir
+defmodule Base64 do
+  import Bitwise
+
+  @encoding_table %{
+     0 => "A",  1 => "B",  2 => "C",  3 => "D",  4 => "E",  5 => "F",  6 => "G",  7 => "H",
+     8 => "I",  9 => "J", 10 => "K", 11 => "L", 12 => "M", 13 => "N", 14 => "O", 15 => "P",
+    16 => "Q", 17 => "R", 18 => "S", 19 => "T", 20 => "U", 21 => "V", 22 => "W", 23 => "X",
+    24 => "Y", 25 => "Z", 26 => "a", 27 => "b", 28 => "c", 29 => "d", 30 => "e", 31 => "f",
+    32 => "g", 33 => "h", 34 => "i", 35 => "j", 36 => "k", 37 => "l", 38 => "m", 39 => "n",
+    40 => "o", 41 => "p", 42 => "q", 43 => "r", 44 => "s", 45 => "t", 46 => "u", 47 => "v",
+    48 => "w", 49 => "x", 50 => "y", 51 => "z", 52 => "0", 53 => "1", 54 => "2", 55 => "3",
+    56 => "4", 57 => "5", 58 => "6", 59 => "7", 60 => "8", 61 => "9", 62 => "+", 63 => "/"
+  }
+
+  def encode(<<>>), do: <<>>
+
+  def encode(<<a::6, b::6, c::6, d::6>> <> rest) do
+    @encoding_table[a]
+      <> @encoding_table[b]
+      <> @encoding_table[c]
+      <> @encoding_table[d]
+      <> encode(rest)
+  end
+
+  def encode(<<a::6, b::2>>) do
+    @encoding_table[a]
+      <> @encoding_table[b <<< 4]
+      <> "=="
+  end
+
+  def encode(<<a::6, b::6, c::4>>) do
+    @encoding_table[a]
+      <> @encoding_table[b]
+      <> @encoding_table[c <<< 2]
+      <> "="
+  end
+
+  @decoding_table %{
+    ?A =>  0, ?B =>  1, ?C =>  2, ?D =>  3, ?E =>  4, ?F =>  5, ?G =>  6, ?H =>  7,
+    ?I =>  8, ?J =>  9, ?K => 10, ?L => 11, ?M => 12, ?N => 13, ?O => 14, ?P => 15,
+    ?Q => 16, ?R => 17, ?S => 18, ?T => 19, ?U => 20, ?V => 21, ?W => 22, ?X => 23,
+    ?Y => 24, ?Z => 25, ?a => 26, ?b => 27, ?c => 28, ?d => 29, ?e => 30, ?f => 31,
+    ?g => 32, ?h => 33, ?i => 34, ?j => 35, ?k => 36, ?l => 37, ?m => 38, ?n => 39,
+    ?o => 40, ?p => 41, ?q => 42, ?r => 43, ?s => 44, ?t => 45, ?u => 46, ?v => 47,
+    ?w => 48, ?x => 49, ?y => 50, ?z => 51, ?0 => 52, ?1 => 53, ?2 => 54, ?3 => 55,
+    ?4 => 56, ?5 => 57, ?6 => 58, ?7 => 59, ?8 => 60, ?9 => 61, ?+ => 62, ?/ => 63
+  }
+
+  def decode!(<<>>), do: <<>>
+
+  def decode!(<<a>> <> "==") do
+    << @decoding_table[a] >>> 4::2 >>
+  end
+
+  def decode!(<<a>> <> "=") do
+    << @decoding_table[a] >>> 2::4 >>
+  end
+
+  def decode!(<<a>> <> rest) do
+    << @decoding_table[a]::6, decode!(rest)::bitstring >>
+  end
+end
+```
+
+The specification outlines [test cases](https://datatracker.ietf.org/doc/html/rfc4648#section-10) to validate that encoding has been performed properly. We'll also compare our output to the Base module provided by the Elixir standard library. If you've loaded this into Livebook these cases should execute and pass:
+
+```elixir
+ExUnit.start(autorun: false)
+
+defmodule Base64.Tests do
+  use ExUnit.Case, async: true
+
+  test "encode/1" do
+    assert Base64.encode("") == ""
+    assert Base64.encode("f") == "Zg=="
+    assert Base64.encode("fo") == "Zm8="
+    assert Base64.encode("foo") == "Zm9v"
+    assert Base64.encode("foob") == "Zm9vYg=="
+    assert Base64.encode("fooba") == "Zm9vYmE="
+    assert Base64.encode("foobar") == "Zm9vYmFy"
+  end
+
+  test "decode!/1" do
+    assert Base64.decode!("Zm9vYmFy") == "foobar"
+    assert Base64.decode!("Zm9vYmE=") == "fooba"
+    assert Base64.decode!("Zm9vYg==") == "foob"
+    assert Base64.decode!("Zm9v") == "foo"
+    assert Base64.decode!("Zm8=") == "fo"
+    assert Base64.decode!("Zg==") == "f"
+    assert Base64.decode!("") == ""
+  end
+
+  test "encode/1 matches output of Base.encode64/1" do
+    assert Base64.encode("") == Base.encode64("")
+    assert Base64.encode("f") == Base.encode64("f")
+    assert Base64.encode("fo") == Base.encode64("fo")
+    assert Base64.encode("foo") == Base.encode64("foo")
+    assert Base64.encode("foob") == Base.encode64("foob")
+    assert Base64.encode("fooba") == Base.encode64("fooba")
+    assert Base64.encode("foobar") == Base.encode64("foobar")
+  end
+
+  test "decode!/1 matches output of Base.decode64!/1" do
+    assert Base64.decode!("Zm9vYmFy") == Base.decode64!("Zm9vYmFy")
+    assert Base64.decode!("Zm9vYmE=") == Base.decode64!("Zm9vYmE=")
+    assert Base64.decode!("Zm9vYg==") == Base.decode64!("Zm9vYg==")
+    assert Base64.decode!("Zm9v") == Base.decode64!("Zm9v")
+    assert Base64.decode!("Zm8=") == Base.decode64!("Zm8=")
+    assert Base64.decode!("Zg==") == Base.decode64!("Zg==")
+    assert Base64.decode!("") == Base.decode64!("")
+  end
+end
+
+ExUnit.run()
+```
+
+## Base 32
+
+### Encoding
+
+Just as with Base 64, [RFC 4648](https://tools.ietf.org/html/rfc4648) is explicit in the required data format and the variety of cases that can occur for Base 32 (emphasis my own):
+
+> The encoding process represents **40-bit groups** of input bits as output
+> strings of **8 encoded characters**.  Proceeding from left to right, a
+> 40-bit input group is formed by **concatenating 5 8bit input groups**.
+> These 40 bits are then treated as **8 concatenated 5-bit groups**, each
+> of which is translated into a single character in the base 32
+> alphabet.
+> 
+> Each 5-bit group is used as an index into an array of 32 printable
+> characters.  The character referenced by the index is placed in the
+> output string.
+
+We've got two major differences here:
+
+1. Base 32 uses 40-bit groups as the input group as opposed to the 24-bit input groups of Base 64.
+2. The input group size for encoding to the Base 32 alphabet is 5 bits as opposed to the 6 bits of Base 64.
+
+Let's go ahead and write the code that satisfies this part of the spec:
+
+<!-- livebook:{"force_markdown":true} -->
+
+```elixir
+defmodule Base32 do
+  import Bitwise # 1
+
+  # 2
+  @encoding_table %{
+     0 => "A",  1 => "B",  2 => "C",  3 => "D",  4 => "E",  5 => "F",  6 => "G",  7 => "H",  
+     8 => "I",  9 => "J", 10 => "K", 11 => "L", 12 => "M", 13 => "N", 14 => "O", 15 => "P", 
+    16 => "Q", 17 => "R", 18 => "S", 19 => "T", 20 => "U", 21 => "V", 22 => "W", 23 => "X", 
+    24 => "Y", 25 => "Z", 26 => "2", 27 => "3", 28 => "4", 29 => "5", 30 => "6", 31 => "7"
+  }
+
+  # 3
+  def encode(<<>>), do: <<>>
+
+  # 4
+  def encode(<<a::5, b::5, c::5, d::5, e::5, f::5, g::5, h::5>> <> rest) do
+    @encoding_table[a]
+      <> @encoding_table[b]
+      <> @encoding_table[c]
+      <> @encoding_table[d]
+      <> @encoding_table[e]
+      <> @encoding_table[f]
+      <> @encoding_table[g]
+      <> @encoding_table[h]
+      <> encode(rest)
+  end
+```
+
+1. As with our Base 64 implementation, we're going to need access to the Bitwise module so we can get access to the bitshifting operators it contains.
+2. We create a map of our decimal values to their corresponding Base 32 alphabet character ([appendix](#Base-32-Encoding-Alphabet)).
+3. In the empty case, we have nothing to encode, so we return an empty binary.
+4. We get to the meat of the specification here. We split our binary into eight 5-bit groups, look up their values in our encoding table, and concatenate them together. At the tail, we concatenate the result of our recursive call to our encode function.
+
+Since we're dealing with entirely different multiples (5-bit groups and 40-bit inputs), the are numerous final encoding cases:
+
+> (1) The final quantum of encoding input is an integral multiple of 40 bits; here, the final unit of encoded output will be an integral multiple of 8 characters with no "=" padding.
+
+We already covered this above:
+
+<!-- livebook:{"force_markdown":true} -->
+
+```elixir
+  def encode(<<a::5, b::5, c::5, d::5, e::5, f::5, g::5, h::5>> <> rest) do
+    @encoding_table[a]
+      <> @encoding_table[b]
+      <> @encoding_table[c]
+      <> @encoding_table[d]
+      <> @encoding_table[e]
+      <> @encoding_table[f]
+      <> @encoding_table[g]
+      <> @encoding_table[h]
+      <> encode(rest)
+  end
+```
+
+In the case where the "final quantum of encoding" is exactly 40 bits, the `rest` portion will be an empty binary, which will resolve to no padding at the end of our encoded output.
+
+> (2) The final quantum of encoding input is exactly 8 bits; here, the final unit of encoded output will be two characters followed by six "=" padding characters.
+
+<!-- livebook:{"force_markdown":true} -->
+
+```elixir
+  # 1
+  def encode(<<a::5, b::3>>) do
+    @encoding_table[a]
+      <> @encoding_table[b <<< 2] # 2
+      <> "======" # 3
+  end
+```
+
+1. We pattern match here and split the first case by 5 bits and the last by 3 bits.
+2. As in the Base 64 examples, we need to adjust the final input group to be 5 bits wide before looking up its value in the encoding table. Here, our final input group is 3 bits wide, so we shift it left 2 bits before looking up our encoding value.
+3. Finally, we append six "=" padding characters to the end of the output.
+
+> (3) The final quantum of encoding input is exactly 16 bits; here, the final unit of encoded output will be four characters followed by four "=" padding characters.
+
+<!-- livebook:{"force_markdown":true} -->
+
+```elixir
+  # 1
+  def encode(<<a::5, b::5, c::5, d::1>>) do
+    @encoding_table[a]
+      <> @encoding_table[b]
+      <> @encoding_table[c]
+      <> @encoding_table[d <<< 4] # 2
+      <> "====" # 3
+  end
+```
+
+1. Here we take our 16-bit input and split it into three 5-bit input groups with a remainder of a 1-bit input group.
+2. Once again, we need to make our final input 5 bits wide. Since this last input group is 1-bit wide, we shift it left 4 bits before looking up the value.
+3. Finally, we append 4 "=" padding characters to the end of our output as the specification requires.
+
+> (4) The final quantum of encoding input is exactly 24 bits; here, the final unit of encoded output will be five characters followed by three "=" padding characters.
+
+<!-- livebook:{"force_markdown":true} -->
+
+```elixir
+  # 1
+  def encode(<<a::5, b::5, c::5, d::5, e::4>>) do
+    @encoding_table[a]
+      <> @encoding_table[b]
+      <> @encoding_table[c]
+      <> @encoding_table[d]
+      <> @encoding_table[e <<< 1] # 2
+      <> "===" # 3
+  end
+```
+
+1. We split our 24-bit input into five 5-bit input groups with a remainder of a 4-bit input group.
+2. Yet again, we need to adjust our input group to be 5 bits wide, so we shift this one left 1 bit before looking up the value.
+3. We pad our output with 3 "=" padding characters to the end of our output
+
+> (5) The final quantum of encoding input is exactly 32 bits; here, the final unit of encoded output will be seven characters followed by one "=" padding character.
+
+<!-- livebook:{"force_markdown":true} -->
+
+```elixir
+  # 1
+  def encode(<<a::5, b::5, c::5, d::5, e::5, f::5, g::2>>) do
+    @encoding_table[a]
+      <> @encoding_table[b]
+      <> @encoding_table[c]
+      <> @encoding_table[d]
+      <> @encoding_table[e]
+      <> @encoding_table[f]
+      <> @encoding_table[g <<< 3] # 2
+      <> "=" # 3
+  end
+```
+
+1. We split our 32-bit input into six 5-bit input groups with a remainder of a 2-bit input group.
+2. The final 2-bit input group is shifted left 3 bits so we end up with a 5-bit value before looking up the encoding value.
+3. The final output is padded with a single "=" padding character.
+
+### Decoding
+
+Just as we did with Base 64, we need to do perform the reverse of what we did with the encoding process. We'll follow the same pattern to decode.
+
+<!-- livebook:{"force_markdown":true} -->
+
+```elixir
+  # 1
+  @decoding_table %{
+    ?A =>  0, ?B =>  1, ?C =>  2, ?D =>  3, ?E =>  4, ?F =>  5, ?G =>  6, ?H =>  7,
+    ?I =>  8, ?J =>  9, ?K => 10, ?L => 11, ?M => 12, ?N => 13, ?O => 14, ?P => 15,
+    ?Q => 16, ?R => 17, ?S => 18, ?T => 19, ?U => 20, ?V => 21, ?W => 22, ?X => 23,
+    ?Y => 24, ?Z => 25, ?2 => 26, ?3 => 27, ?4 => 28, ?5 => 29, ?6 => 30, ?7 => 31
+  }
+```
+
+1. We define our decoding table to lookup values based on their ASCII code points.
+
+Our decoding process is much simpler so we'll do everything in a single code block:
+
+<!-- livebook:{"force_markdown":true} -->
+
+```elixir
+  # 1
+  def decode!(<<>>), do: <<>>
+
+  # 2
+  def decode!(<<a>> <> "======") do
+    << @decoding_table[a] >>> 2::3 >>
+  end
+
+  # 3
+  def decode!(<<a>> <> "====") do
+    << @decoding_table[a] >>> 4::1 >>
+  end
+
+  # 4
+  def decode!(<<a>> <> "===") do
+    << @decoding_table[a] >>> 1::4 >>
+  end
+
+  # 5
+  def decode!(<<a>> <> "=") do
+    << @decoding_table[a] >>> 3::2 >>
+  end
+
+  # 6
+  def decode!(<<a>> <> rest) do
+    << @decoding_table[a]::5, decode!(rest)::bitstring >>
+  end
+end
+```
+
+1. We define our empty case first. Just like in our encoding stage, if we're passed an empty binary to decode we have nothing to do, so we return an empty binary. We define our decode function with an `!` to signal that this is not a safe operation and this function can fail if provided data that has not been Base 32 encoded.
+2. In this function head we deal with our case where we padded our final output with "======". In this case we know that our last input group was originally 3 bits, so we shift it right 2 bits and explicitly size it to 3 bits in the bit string.
+3. Next we handle the case where we padded with "====". We know in this instance our final input group was a single bit wide, so we lookup the decoded value, shift it right 4 bits, and size it to a single bit.
+4. Here we handle the 4-bit input group case that was padded with "===". We look up the value and shift it right a single bit before sizing it to 4 bits.
+5. Now we handle our final terminal case and deal with our single "=" padded case. We lookup our decoded value, shift it right 3 bits and explicitly size it to 2 bits.
+6. Finally, we define the case where we've got no padding to the right of our encoded character. We look up the value in the encoding table, explicitly size it to 5 bits, and then recursively decode the remaining binary.
+
+Altogether, the final Base32 module should look like this
+
+```elixir
+defmodule Base32 do
+  import Bitwise
+
+  @encoding_table %{
+     0 => "A",  1 => "B",  2 => "C",  3 => "D",  4 => "E",  5 => "F",  6 => "G",  7 => "H",
+     8 => "I",  9 => "J", 10 => "K", 11 => "L", 12 => "M", 13 => "N", 14 => "O", 15 => "P",
+    16 => "Q", 17 => "R", 18 => "S", 19 => "T", 20 => "U", 21 => "V", 22 => "W", 23 => "X",
+    24 => "Y", 25 => "Z", 26 => "2", 27 => "3", 28 => "4", 29 => "5", 30 => "6", 31 => "7"
+  }
+
+  def encode(<<>>), do: <<>>
+
+  def encode(<<a::5, b::5, c::5, d::5, e::5, f::5, g::5, h::5>> <> rest) do
+    @encoding_table[a]
+      <> @encoding_table[b]
+      <> @encoding_table[c]
+      <> @encoding_table[d]
+      <> @encoding_table[e]
+      <> @encoding_table[f]
+      <> @encoding_table[g]
+      <> @encoding_table[h]
+      <> encode(rest)
+  end
+
+  def encode(<<a::5, b::3>>) do
+    @encoding_table[a]
+      <> @encoding_table[b <<< 2]
+      <> "======"
+  end
+
+  def encode(<<a::5, b::5, c::5, d::1>>) do
+    @encoding_table[a]
+      <> @encoding_table[b]
+      <> @encoding_table[c]
+      <> @encoding_table[d <<< 4]
+      <> "===="
+  end
+
+  def encode(<<a::5, b::5, c::5, d::5, e::4>>) do
+    @encoding_table[a]
+      <> @encoding_table[b]
+      <> @encoding_table[c]
+      <> @encoding_table[d]
+      <> @encoding_table[e <<< 1]
+      <> "==="
+  end
+
+  def encode(<<a::5, b::5, c::5, d::5, e::5, f::5, g::2>>) do
+    @encoding_table[a]
+      <> @encoding_table[b]
+      <> @encoding_table[c]
+      <> @encoding_table[d]
+      <> @encoding_table[e]
+      <> @encoding_table[f]
+      <> @encoding_table[g <<< 3]
+      <> "="
+  end
+
+  @decoding_table %{
+    ?A =>  0, ?B =>  1, ?C =>  2, ?D =>  3, ?E =>  4, ?F =>  5, ?G =>  6, ?H =>  7,
+    ?I =>  8, ?J =>  9, ?K => 10, ?L => 11, ?M => 12, ?N => 13, ?O => 14, ?P => 15,
+    ?Q => 16, ?R => 17, ?S => 18, ?T => 19, ?U => 20, ?V => 21, ?W => 22, ?X => 23,
+    ?Y => 24, ?Z => 25, ?2 => 26, ?3 => 27, ?4 => 28, ?5 => 29, ?6 => 30, ?7 => 31
+  }
+
+  def decode!(<<>>), do: <<>>
+
+  def decode!(<<a>> <> "======") do
+    << @decoding_table[a] >>> 2::3 >>
+  end
+
+  def decode!(<<a>> <> "====") do
+    << @decoding_table[a] >>> 4::1 >>
+  end
+
+  def decode!(<<a>> <> "===") do
+    << @decoding_table[a] >>> 1::4 >>
+  end
+
+  def decode!(<<a>> <> "=") do
+    << @decoding_table[a] >>> 3::2 >>
+  end
+
+  def decode!(<<a>> <> rest) do
+    << @decoding_table[a]::5, decode!(rest)::bitstring >>
+  end
+end
+```
+
+The specification outlines [test cases](https://datatracker.ietf.org/doc/html/rfc4648#section-10) to validate that encoding has been performed properly. We'll also compare our output to the Base module provided by the Elixir standard library. If you've loaded this into Livebook these cases should execute and pass:
+
+```elixir
+ExUnit.start(autorun: false)
+
+defmodule Base32.Tests do
+  use ExUnit.Case, async: true
+
+  test "encoding" do
+    assert Base32.encode("") == ""
+    assert Base32.encode("f") == "MY======"
+    assert Base32.encode("fo") == "MZXQ===="
+    assert Base32.encode("foo") == "MZXW6==="
+    assert Base32.encode("foob") == "MZXW6YQ="
+    assert Base32.encode("fooba") == "MZXW6YTB"
+    assert Base32.encode("foobar") == "MZXW6YTBOI======"
+  end
+
+  test "decoding" do
+    assert Base32.decode!("") == ""
+    assert Base32.decode!("MY======") == "f"
+    assert Base32.decode!("MZXQ====") == "fo"
+    assert Base32.decode!("MZXW6===") == "foo"
+    assert Base32.decode!("MZXW6YQ=") == "foob"
+    assert Base32.decode!("MZXW6YTB") == "fooba"
+    assert Base32.decode!("MZXW6YTBOI======") == "foobar"
+  end
+
+  test "encoding matches output of Elixir's Base.encode32/1" do
+    assert Base32.encode("") == Base.encode32("")
+    assert Base32.encode("f") == Base.encode32("f")
+    assert Base32.encode("fo") == Base.encode32("fo")
+    assert Base32.encode("foo") == Base.encode32("foo")
+    assert Base32.encode("foob") == Base.encode32("foob")
+    assert Base32.encode("fooba") == Base.encode32("fooba")
+    assert Base32.encode("foobar") == Base.encode32("foobar")
+  end
+
+  test "decoding matches output of Elixir's Base.decode32!/1" do
+    assert Base32.decode!("MY======") == Base.decode32!("MY======")
+    assert Base32.decode!("MZXQ====") == Base.decode32!("MZXQ====")
+    assert Base32.decode!("MZXW6===") == Base.decode32!("MZXW6===")
+    assert Base32.decode!("MZXW6YQ=") == Base.decode32!("MZXW6YQ=")
+    assert Base32.decode!("MZXW6YTB") == Base.decode32!("MZXW6YTB")
+    assert Base32.decode!("MZXW6YTBOI======") == Base.decode32!("MZXW6YTBOI======")
+    assert Base32.decode!("") == Base.decode32!("")
+  end
+end
+
+ExUnit.run()
+```
+
+## Base 16
+
+Base 16 encoding is the simplest of all the Base-N encodings. Here's how 
+[RFC4648](https://datatracker.ietf.org/doc/html/rfc4648#section-6) defines the encoding:
+
+> The encoding process represents 8-bit groups (octets) of input bits
+> as output strings of 2 encoded characters.  Proceeding from left to
+> right, an 8-bit input is taken from the input data.  These 8 bits are
+> then treated as 2 concatenated 4-bit groups, each of which is
+> translated into a single character in the base 16 alphabet.
+> 
+> Each 4-bit group is used as an index into an array of 16 printable
+> characters.  The character referenced by the index is placed in the
+> output string.
+> 
+> Unlike base 32 and base 64, no special padding is necessary since a
+> full code word is always available.
+
+Since all bytes are evenly divisible by 4, there are no edge cases to consider. Let's jump right into the code. We'll handle both encoding and decoding here as there is not much code to write
+
+```elixir
+defmodule Base16 do
+  # 1
+  @encoding_table %{
+     0 => "0",  1 => "1",  2 => "2",  3 => "3",
+     4 => "4",  5 => "5",  6 => "6",  7 => "7",
+     8 => "8",  9 => "9", 10 => "A", 11 => "B",
+    12 => "C", 13 => "D", 14 => "E", 15 => "F"
+  }
+
+  # 2
+  def encode(<<>>), do: <<>>
+
+  # 3
+  def encode(<<a::4, b::4>> <> rest) do
+    @encoding_table[a]
+      <> @encoding_table[b]
+      <> encode(rest)
+  end
+
+  # 4
+  @decoding_table %{
+    ?0 =>  0, ?1 =>  1, ?2 =>  2, ?3 =>  3,
+    ?4 =>  4, ?5 =>  5, ?6 =>  6, ?7 =>  7,
+    ?8 =>  8, ?9 =>  9, ?A => 10, ?B => 11,
+    ?C => 12, ?D => 13, ?E => 14, ?F => 15
+  }
+
+  # 5
+  def decode!(<<>>), do: <<>>
+
+  # 6
+  def decode!(<<a>> <> rest) do
+    << @decoding_table[a]::4, decode!(rest)::bitstring >>
+  end
+end
+```
+
+1. We create our encoding table to contain the Base 16 encoding alphabet ([appendix](#Base-16-Encoding-Alphabet))
+2. We handle the empty case. If we have an empty binary, we return an empty binary
+3. Here we pattern match on the first and second 4 bits of our input, look up their encoding values, and concatenate the values with the result of a recursive call to encode.
+4. We define our decoding table to lookup values based on the possible ASCII code points.
+5. Another empty case here for decoding. We define our decode function with a `!` to denote that this is not a safe operation.
+6. We match on the first input, look it up in our decoding table, explicitly size it to 4 bits, and append the result of our recursive call to decode.
+
+The specification outlines [test cases](https://datatracker.ietf.org/doc/html/rfc4648#section-10) to validate that encoding has been performed properly. We'll also compare our output to the Base module provided by the Elixir standard library. If you've loaded this into Livebook these cases should execute and pass:
+
+```elixir
+ExUnit.start(autorun: false)
+
+defmodule Base16.Tests do
+  use ExUnit.Case, async: true
+
+  test "encoding" do
+    assert Base16.encode("") == ""
+    assert Base16.encode("f") == "66"
+    assert Base16.encode("fo") == "666F"
+    assert Base16.encode("foo") == "666F6F"
+    assert Base16.encode("foob") == "666F6F62"
+    assert Base16.encode("fooba") == "666F6F6261"
+    assert Base16.encode("foobar") == "666F6F626172"
+  end
+
+  test "decoding" do
+    assert Base16.decode!("") == ""
+    assert Base16.decode!("66") == "f"
+    assert Base16.decode!("666F") == "fo"
+    assert Base16.decode!("666F6F") == "foo"
+    assert Base16.decode!("666F6F62") == "foob"
+    assert Base16.decode!("666F6F6261") == "fooba"
+    assert Base16.decode!("666F6F626172") == "foobar"
+  end
+
+  test "encoding matches output of Elixir's Base.encode16/1" do
+    assert Base16.encode("") == Base.encode16("")
+    assert Base16.encode("f") == Base.encode16("f")
+    assert Base16.encode("fo") == Base.encode16("fo")
+    assert Base16.encode("foo") == Base.encode16("foo")
+    assert Base16.encode("foob") == Base.encode16("foob")
+    assert Base16.encode("fooba") == Base.encode16("fooba")
+    assert Base16.encode("foobar") == Base.encode16("foobar")
+  end
+
+  test "encoding matches output of Elixir's Base.decode!16/1" do
+    assert Base16.decode!("") == Base.decode16!("")
+    assert Base16.decode!("66") == Base.decode16!("66")
+    assert Base16.decode!("666F") == Base.decode16!("666F")
+    assert Base16.decode!("666F6F") == Base.decode16!("666F6F")
+    assert Base16.decode!("666F6F62") == Base.decode16!("666F6F62")
+    assert Base16.decode!("666F6F6261") == Base.decode16!("666F6F6261")
+    assert Base16.decode!("666F6F626172") == Base.decode16!("666F6F626172")
+  end
+end
+
+ExUnit.run()
+```
+
+## Phew!
+That was a lot. To put this exercise into perspective, our largest module ([Base32](#Base-32)) was 86 lines of code. If you compare this to a [Swift implementation](https://github.com/norio-nomura/Base32/blob/master/Sources/Base32/Base32.swift) of Base 32, it's encode function is 84 lines lines of code and it's decode function is 118 lines of code. I think this is a testament of Elixir's ability to be both expressive and concise for solving problems down to the level of manipulating binary data.
+
+If you made it this far you probably noticed that once we defined our `Base64` module, implementing the rest of the specification was largely repeating the same patterns but for the specific implementations of the subsequent encoding specifications. Working with binary data in this manner may take some getting used to, but I think it is one of the more powerful features of Elixir.
+
+## Appendix
+
+### Base 64 Encoding Alphabet
+
+[source](https://datatracker.ietf.org/doc/html/rfc4648#section-4)
+
+```
+Value Encoding  Value Encoding  Value Encoding  Value Encoding
+     0 A            17 R            34 i            51 z
+     1 B            18 S            35 j            52 0
+     2 C            19 T            36 k            53 1
+     3 D            20 U            37 l            54 2
+     4 E            21 V            38 m            55 3
+     5 F            22 W            39 n            56 4
+     6 G            23 X            40 o            57 5
+     7 H            24 Y            41 p            58 6
+     8 I            25 Z            42 q            59 7
+     9 J            26 a            43 r            60 8
+    10 K            27 b            44 s            61 9
+    11 L            28 c            45 t            62 +
+    12 M            29 d            46 u            63 /
+    13 N            30 e            47 v
+    14 O            31 f            48 w         (pad) =
+    15 P            32 g            49 x
+    16 Q            33 h            50 y
+```
+
+### Base 32 Encoding Alphabet
+
+[source](https://datatracker.ietf.org/doc/html/rfc4648#section-6)
+
+```
+Value Encoding  Value Encoding  Value Encoding  Value Encoding
+    0 A             9 J            18 S            27 3
+    1 B            10 K            19 T            28 4
+    2 C            11 L            20 U            29 5
+    3 D            12 M            21 V            30 6
+    4 E            13 N            22 W            31 7
+    5 F            14 O            23 X
+    6 G            15 P            24 Y         (pad) =
+    7 H            16 Q            25 Z
+    8 I            17 R            26 2
+```
+
+### Base 16 Encoding Alphabet
+
+[source](https://datatracker.ietf.org/doc/html/rfc4648#section-8)
+
+```
+Value Encoding  Value Encoding  Value Encoding  Value Encoding
+    0 0             4 4             8 8            12 C
+    1 1             5 5             9 9            13 D
+    2 2             6 6            10 A            14 E
+    3 3             7 7            11 B            15 F
+```
