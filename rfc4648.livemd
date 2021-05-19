@@ -1,10 +1,8 @@
 # Rolling your own Base-N Encoder in Elixir
 
-*This post is available as a Livebook [at this github url]()*.
-
 ## Background
 
-*If you'd rather go straight to the code and skip over this introduction, jump straight to the [Base 64 implementation](#section-ov6uzy4ssq47vw3pssijbolxhguq5cv7)*
+*If you'd rather go straight to the code and skip over this introduction, jump straight to the [Base 64 implementation](#section-ti2tf4nvf37dsmbknjghiqotuvuriqkl)*
 
 A little over a year ago, I attempted to roll my own Base 32 encoder in [Swift](https://swift.org/) (I'm an iOS developer professionally). I found the [IETF specification](https://datatracker.ietf.org/doc/html/rfc4648) and set out to implement it. I eventually gave up because the methods of manipulating binary data in Swift are terse, hard to understand, and overall pretty verbose.
 
@@ -91,18 +89,18 @@ Let's breakdown what's going on by the numbers. This is how I will break down co
 1. Here we define a function where we split a byte in half, which are assigned to `a` and `b` respectively in the function head. The `::` specifies the size in bits. So both `a` and `b` are required to be 4 bits wide. Yes, those are terrible names for variables, but if you can figure out more descriptive names for naming chunks of binary data let me know!
 2. Here in our test, we assign a bitstring to the variable `binary`. Again the `::` specifies the size in bits. This translates to a literal binary string of `11110101`.
 3. We pass the binary to our `add_bits/1` function...and it equals 20? Let's break down *exactly* what is happening in some pseudocode:
-```elixir
-add_bits(11110101)
-#
-# Split the binary into the bits that match
-add_bits(a = 1111, b = 0101)
-#
-# Convert the split bits into decimal
-add_bits(a = 15, b = 5)
-#
-# Add Them together
-15 + 5 = 20
-```
+   ```elixir
+   add_bits(11110101)
+   #
+   # Split the binary into the bits that match
+   add_bits(a = 1111, b = 0101)
+   #
+   # Convert the split bits into decimal
+   add_bits(a = 15, b = 5)
+   #
+   # Add Them together
+   15 + 5 = 20
+   ```
 
 Being able to manipulate binary data in this manner makes it much more approachable to do something crazy like roll your own encoders and decoders for Base 64, 32, and 16!
 
@@ -168,9 +166,9 @@ defmodule Base64 do
 ```
 
 1. We import `Bitwise` to get access to bitshifting operators. This will be important in later steps.
-2. We create a map to map our decimal values to their Base 64 alphabet representation (see [appendix](#Base-64-Encoding-Alphabet)). This could also work as a `List` since the keys themselves are exactly what the indices would be. However, making a `List` work for the [decoding](#Decoding) process would be cumbersome so I opted for uniformity between encoding and decoding.
+2. We create a map to map our decimal values to their Base 64 alphabet representation (see [appendix](#section-ti2tf4nvf37dsmbknjghiqotuvuriqkl)). This could also work as a `List` since the keys themselves are exactly what the indices would be. However, making a `List` work for the [decoding](#Decoding) process would be cumbersome so I opted for uniformity between encoding and decoding.
 3. We handle the empty case. If we get any empty binary there is nothing to encode, so we return an empty binary.
-4. Now we get into the happy path. As emphasized in the specification, we split the 24-bit input group into 4 6-bit input groups via pattern matching and then use the value of each 6-bit input group to access our encoding value from our `@encoding_table`. We concatenate each lookup together and then concatenate the result of recursing into our encode function. 
+4. Now we get into the happy path. As emphasized in the specification, we split the 24-bit input group into 4 6-bit input groups via pattern matching and then use the value of each 6-bit input group to access our encoding value from our `@encoding_table`. We concatenate each lookup together and then concatenate the result of recursing into our encode function.
 
 ![gif that explains recursion by looping &#39;if you don&#39;t understand recursion, watch this GIF again&#39;](https://media.giphy.com/media/EHNsJZSBBKxaupNuX5/giphy.gif)
 
@@ -225,9 +223,10 @@ Therefore, in a case where we have a binary evenly divisible by 24 bits, our fin
 
 ![gif illustrating how splitting an 8 bit group and then shifting the final 2 bit input group left 4 bits looks](https://media.giphy.com/media/EeHp96RxbfAXhwIPMQ/giphy.gif)
 
-3. We terminate the output with two "=" padding characters.
+1. We terminate the output with two "=" padding characters.
 
 Here's a step-by-step example of how the letter "g" would be encoded:
+
 ```
 Binary Size            Binary          Decimal
 8-bit                  01100111        103
@@ -261,7 +260,7 @@ Encoded Output       "lw=="
 
 ![gif illustrating how splitting a 16 bit group and then shifting the final 4 bit input group left 2 bits looks](https://media.giphy.com/media/NYZ5g3UiV1PLp9FYPV/giphy.gif)
 
-3. We terminate the output with a single "=" padding character.
+1. We terminate the output with a single "=" padding character.
 
 That covers all the requirements for encoding!
 
@@ -324,62 +323,174 @@ defmodule Base64 do
   import Bitwise
 
   @encoding_table %{
-     0 => "A",  1 => "B",  2 => "C",  3 => "D",  4 => "E",  5 => "F",  6 => "G",  7 => "H",
-     8 => "I",  9 => "J", 10 => "K", 11 => "L", 12 => "M", 13 => "N", 14 => "O", 15 => "P",
-    16 => "Q", 17 => "R", 18 => "S", 19 => "T", 20 => "U", 21 => "V", 22 => "W", 23 => "X",
-    24 => "Y", 25 => "Z", 26 => "a", 27 => "b", 28 => "c", 29 => "d", 30 => "e", 31 => "f",
-    32 => "g", 33 => "h", 34 => "i", 35 => "j", 36 => "k", 37 => "l", 38 => "m", 39 => "n",
-    40 => "o", 41 => "p", 42 => "q", 43 => "r", 44 => "s", 45 => "t", 46 => "u", 47 => "v",
-    48 => "w", 49 => "x", 50 => "y", 51 => "z", 52 => "0", 53 => "1", 54 => "2", 55 => "3",
-    56 => "4", 57 => "5", 58 => "6", 59 => "7", 60 => "8", 61 => "9", 62 => "+", 63 => "/"
+    0 => "A",
+    1 => "B",
+    2 => "C",
+    3 => "D",
+    4 => "E",
+    5 => "F",
+    6 => "G",
+    7 => "H",
+    8 => "I",
+    9 => "J",
+    10 => "K",
+    11 => "L",
+    12 => "M",
+    13 => "N",
+    14 => "O",
+    15 => "P",
+    16 => "Q",
+    17 => "R",
+    18 => "S",
+    19 => "T",
+    20 => "U",
+    21 => "V",
+    22 => "W",
+    23 => "X",
+    24 => "Y",
+    25 => "Z",
+    26 => "a",
+    27 => "b",
+    28 => "c",
+    29 => "d",
+    30 => "e",
+    31 => "f",
+    32 => "g",
+    33 => "h",
+    34 => "i",
+    35 => "j",
+    36 => "k",
+    37 => "l",
+    38 => "m",
+    39 => "n",
+    40 => "o",
+    41 => "p",
+    42 => "q",
+    43 => "r",
+    44 => "s",
+    45 => "t",
+    46 => "u",
+    47 => "v",
+    48 => "w",
+    49 => "x",
+    50 => "y",
+    51 => "z",
+    52 => "0",
+    53 => "1",
+    54 => "2",
+    55 => "3",
+    56 => "4",
+    57 => "5",
+    58 => "6",
+    59 => "7",
+    60 => "8",
+    61 => "9",
+    62 => "+",
+    63 => "/"
   }
 
   def encode(<<>>), do: <<>>
 
   def encode(<<a::6, b::6, c::6, d::6>> <> rest) do
-    @encoding_table[a]
-      <> @encoding_table[b]
-      <> @encoding_table[c]
-      <> @encoding_table[d]
-      <> encode(rest)
+    @encoding_table[a] <>
+      @encoding_table[b] <>
+      @encoding_table[c] <>
+      @encoding_table[d] <>
+      encode(rest)
   end
 
   def encode(<<a::6, b::2>>) do
-    @encoding_table[a]
-      <> @encoding_table[b <<< 4]
-      <> "=="
+    @encoding_table[a] <>
+      @encoding_table[b <<< 4] <>
+      "=="
   end
 
   def encode(<<a::6, b::6, c::4>>) do
-    @encoding_table[a]
-      <> @encoding_table[b]
-      <> @encoding_table[c <<< 2]
-      <> "="
+    @encoding_table[a] <>
+      @encoding_table[b] <>
+      @encoding_table[c <<< 2] <>
+      "="
   end
 
   @decoding_table %{
-    ?A =>  0, ?B =>  1, ?C =>  2, ?D =>  3, ?E =>  4, ?F =>  5, ?G =>  6, ?H =>  7,
-    ?I =>  8, ?J =>  9, ?K => 10, ?L => 11, ?M => 12, ?N => 13, ?O => 14, ?P => 15,
-    ?Q => 16, ?R => 17, ?S => 18, ?T => 19, ?U => 20, ?V => 21, ?W => 22, ?X => 23,
-    ?Y => 24, ?Z => 25, ?a => 26, ?b => 27, ?c => 28, ?d => 29, ?e => 30, ?f => 31,
-    ?g => 32, ?h => 33, ?i => 34, ?j => 35, ?k => 36, ?l => 37, ?m => 38, ?n => 39,
-    ?o => 40, ?p => 41, ?q => 42, ?r => 43, ?s => 44, ?t => 45, ?u => 46, ?v => 47,
-    ?w => 48, ?x => 49, ?y => 50, ?z => 51, ?0 => 52, ?1 => 53, ?2 => 54, ?3 => 55,
-    ?4 => 56, ?5 => 57, ?6 => 58, ?7 => 59, ?8 => 60, ?9 => 61, ?+ => 62, ?/ => 63
+    ?A => 0,
+    ?B => 1,
+    ?C => 2,
+    ?D => 3,
+    ?E => 4,
+    ?F => 5,
+    ?G => 6,
+    ?H => 7,
+    ?I => 8,
+    ?J => 9,
+    ?K => 10,
+    ?L => 11,
+    ?M => 12,
+    ?N => 13,
+    ?O => 14,
+    ?P => 15,
+    ?Q => 16,
+    ?R => 17,
+    ?S => 18,
+    ?T => 19,
+    ?U => 20,
+    ?V => 21,
+    ?W => 22,
+    ?X => 23,
+    ?Y => 24,
+    ?Z => 25,
+    ?a => 26,
+    ?b => 27,
+    ?c => 28,
+    ?d => 29,
+    ?e => 30,
+    ?f => 31,
+    ?g => 32,
+    ?h => 33,
+    ?i => 34,
+    ?j => 35,
+    ?k => 36,
+    ?l => 37,
+    ?m => 38,
+    ?n => 39,
+    ?o => 40,
+    ?p => 41,
+    ?q => 42,
+    ?r => 43,
+    ?s => 44,
+    ?t => 45,
+    ?u => 46,
+    ?v => 47,
+    ?w => 48,
+    ?x => 49,
+    ?y => 50,
+    ?z => 51,
+    ?0 => 52,
+    ?1 => 53,
+    ?2 => 54,
+    ?3 => 55,
+    ?4 => 56,
+    ?5 => 57,
+    ?6 => 58,
+    ?7 => 59,
+    ?8 => 60,
+    ?9 => 61,
+    ?+ => 62,
+    ?/ => 63
   }
 
   def decode!(<<>>), do: <<>>
 
   def decode!(<<a>> <> "==") do
-    << @decoding_table[a] >>> 4::2 >>
+    <<@decoding_table[a] >>> 4::2>>
   end
 
   def decode!(<<a>> <> "=") do
-    << @decoding_table[a] >>> 2::4 >>
+    <<@decoding_table[a] >>> 2::4>>
   end
 
   def decode!(<<a>> <> rest) do
-    << @decoding_table[a]::6, decode!(rest)::bitstring >>
+    <<@decoding_table[a]::6, decode!(rest)::bitstring>>
   end
 end
 ```
@@ -492,7 +603,7 @@ defmodule Base32 do
 ```
 
 1. As with our Base 64 implementation, we're going to need access to the Bitwise module so we can get access to the bitshifting operators it contains.
-2. We create a map of our decimal values to their corresponding Base 32 alphabet character ([appendix](#Base-32-Encoding-Alphabet)).
+2. We create a map of our decimal values to their corresponding Base 32 alphabet character ([appendix](#section-ti2tf4nvf37dsmbknjghiqotuvuriqkl)).
 3. In the empty case, we have nothing to encode, so we return an empty binary.
 4. We get to the meat of the specification here. We split our binary into eight 5-bit groups, look up their values in our encoding table, and concatenate them together. At the tail, we concatenate the result of our recursive call to our encode function.
 
@@ -665,87 +776,143 @@ defmodule Base32 do
   import Bitwise
 
   @encoding_table %{
-     0 => "A",  1 => "B",  2 => "C",  3 => "D",  4 => "E",  5 => "F",  6 => "G",  7 => "H",
-     8 => "I",  9 => "J", 10 => "K", 11 => "L", 12 => "M", 13 => "N", 14 => "O", 15 => "P",
-    16 => "Q", 17 => "R", 18 => "S", 19 => "T", 20 => "U", 21 => "V", 22 => "W", 23 => "X",
-    24 => "Y", 25 => "Z", 26 => "2", 27 => "3", 28 => "4", 29 => "5", 30 => "6", 31 => "7"
+    0 => "A",
+    1 => "B",
+    2 => "C",
+    3 => "D",
+    4 => "E",
+    5 => "F",
+    6 => "G",
+    7 => "H",
+    8 => "I",
+    9 => "J",
+    10 => "K",
+    11 => "L",
+    12 => "M",
+    13 => "N",
+    14 => "O",
+    15 => "P",
+    16 => "Q",
+    17 => "R",
+    18 => "S",
+    19 => "T",
+    20 => "U",
+    21 => "V",
+    22 => "W",
+    23 => "X",
+    24 => "Y",
+    25 => "Z",
+    26 => "2",
+    27 => "3",
+    28 => "4",
+    29 => "5",
+    30 => "6",
+    31 => "7"
   }
 
   def encode(<<>>), do: <<>>
 
   def encode(<<a::5, b::5, c::5, d::5, e::5, f::5, g::5, h::5>> <> rest) do
-    @encoding_table[a]
-      <> @encoding_table[b]
-      <> @encoding_table[c]
-      <> @encoding_table[d]
-      <> @encoding_table[e]
-      <> @encoding_table[f]
-      <> @encoding_table[g]
-      <> @encoding_table[h]
-      <> encode(rest)
+    @encoding_table[a] <>
+      @encoding_table[b] <>
+      @encoding_table[c] <>
+      @encoding_table[d] <>
+      @encoding_table[e] <>
+      @encoding_table[f] <>
+      @encoding_table[g] <>
+      @encoding_table[h] <>
+      encode(rest)
   end
 
   def encode(<<a::5, b::3>>) do
-    @encoding_table[a]
-      <> @encoding_table[b <<< 2]
-      <> "======"
+    @encoding_table[a] <>
+      @encoding_table[b <<< 2] <>
+      "======"
   end
 
   def encode(<<a::5, b::5, c::5, d::1>>) do
-    @encoding_table[a]
-      <> @encoding_table[b]
-      <> @encoding_table[c]
-      <> @encoding_table[d <<< 4]
-      <> "===="
+    @encoding_table[a] <>
+      @encoding_table[b] <>
+      @encoding_table[c] <>
+      @encoding_table[d <<< 4] <>
+      "===="
   end
 
   def encode(<<a::5, b::5, c::5, d::5, e::4>>) do
-    @encoding_table[a]
-      <> @encoding_table[b]
-      <> @encoding_table[c]
-      <> @encoding_table[d]
-      <> @encoding_table[e <<< 1]
-      <> "==="
+    @encoding_table[a] <>
+      @encoding_table[b] <>
+      @encoding_table[c] <>
+      @encoding_table[d] <>
+      @encoding_table[e <<< 1] <>
+      "==="
   end
 
   def encode(<<a::5, b::5, c::5, d::5, e::5, f::5, g::2>>) do
-    @encoding_table[a]
-      <> @encoding_table[b]
-      <> @encoding_table[c]
-      <> @encoding_table[d]
-      <> @encoding_table[e]
-      <> @encoding_table[f]
-      <> @encoding_table[g <<< 3]
-      <> "="
+    @encoding_table[a] <>
+      @encoding_table[b] <>
+      @encoding_table[c] <>
+      @encoding_table[d] <>
+      @encoding_table[e] <>
+      @encoding_table[f] <>
+      @encoding_table[g <<< 3] <>
+      "="
   end
 
   @decoding_table %{
-    ?A =>  0, ?B =>  1, ?C =>  2, ?D =>  3, ?E =>  4, ?F =>  5, ?G =>  6, ?H =>  7,
-    ?I =>  8, ?J =>  9, ?K => 10, ?L => 11, ?M => 12, ?N => 13, ?O => 14, ?P => 15,
-    ?Q => 16, ?R => 17, ?S => 18, ?T => 19, ?U => 20, ?V => 21, ?W => 22, ?X => 23,
-    ?Y => 24, ?Z => 25, ?2 => 26, ?3 => 27, ?4 => 28, ?5 => 29, ?6 => 30, ?7 => 31
+    ?A => 0,
+    ?B => 1,
+    ?C => 2,
+    ?D => 3,
+    ?E => 4,
+    ?F => 5,
+    ?G => 6,
+    ?H => 7,
+    ?I => 8,
+    ?J => 9,
+    ?K => 10,
+    ?L => 11,
+    ?M => 12,
+    ?N => 13,
+    ?O => 14,
+    ?P => 15,
+    ?Q => 16,
+    ?R => 17,
+    ?S => 18,
+    ?T => 19,
+    ?U => 20,
+    ?V => 21,
+    ?W => 22,
+    ?X => 23,
+    ?Y => 24,
+    ?Z => 25,
+    ?2 => 26,
+    ?3 => 27,
+    ?4 => 28,
+    ?5 => 29,
+    ?6 => 30,
+    ?7 => 31
   }
 
   def decode!(<<>>), do: <<>>
 
   def decode!(<<a>> <> "======") do
-    << @decoding_table[a] >>> 2::3 >>
+    <<@decoding_table[a] >>> 2::3>>
   end
 
   def decode!(<<a>> <> "====") do
-    << @decoding_table[a] >>> 4::1 >>
+    <<@decoding_table[a] >>> 4::1>>
   end
 
   def decode!(<<a>> <> "===") do
-    << @decoding_table[a] >>> 1::4 >>
+    <<@decoding_table[a] >>> 1::4>>
   end
 
   def decode!(<<a>> <> "=") do
-    << @decoding_table[a] >>> 3::2 >>
+    <<@decoding_table[a] >>> 3::2>>
   end
 
   def decode!(<<a>> <> rest) do
-    << @decoding_table[a]::5, decode!(rest)::bitstring >>
+    <<@decoding_table[a]::5, decode!(rest)::bitstring>>
   end
 end
 ```
@@ -826,10 +993,22 @@ Since all bytes are evenly divisible by 4, there are no edge cases to consider. 
 defmodule Base16 do
   # 1
   @encoding_table %{
-     0 => "0",  1 => "1",  2 => "2",  3 => "3",
-     4 => "4",  5 => "5",  6 => "6",  7 => "7",
-     8 => "8",  9 => "9", 10 => "A", 11 => "B",
-    12 => "C", 13 => "D", 14 => "E", 15 => "F"
+    0 => "0",
+    1 => "1",
+    2 => "2",
+    3 => "3",
+    4 => "4",
+    5 => "5",
+    6 => "6",
+    7 => "7",
+    8 => "8",
+    9 => "9",
+    10 => "A",
+    11 => "B",
+    12 => "C",
+    13 => "D",
+    14 => "E",
+    15 => "F"
   }
 
   # 2
@@ -837,17 +1016,29 @@ defmodule Base16 do
 
   # 3
   def encode(<<a::4, b::4>> <> rest) do
-    @encoding_table[a]
-      <> @encoding_table[b]
-      <> encode(rest)
+    @encoding_table[a] <>
+      @encoding_table[b] <>
+      encode(rest)
   end
 
   # 4
   @decoding_table %{
-    ?0 =>  0, ?1 =>  1, ?2 =>  2, ?3 =>  3,
-    ?4 =>  4, ?5 =>  5, ?6 =>  6, ?7 =>  7,
-    ?8 =>  8, ?9 =>  9, ?A => 10, ?B => 11,
-    ?C => 12, ?D => 13, ?E => 14, ?F => 15
+    ?0 => 0,
+    ?1 => 1,
+    ?2 => 2,
+    ?3 => 3,
+    ?4 => 4,
+    ?5 => 5,
+    ?6 => 6,
+    ?7 => 7,
+    ?8 => 8,
+    ?9 => 9,
+    ?A => 10,
+    ?B => 11,
+    ?C => 12,
+    ?D => 13,
+    ?E => 14,
+    ?F => 15
   }
 
   # 5
@@ -855,12 +1046,12 @@ defmodule Base16 do
 
   # 6
   def decode!(<<a>> <> rest) do
-    << @decoding_table[a]::4, decode!(rest)::bitstring >>
+    <<@decoding_table[a]::4, decode!(rest)::bitstring>>
   end
 end
 ```
 
-1. We create our encoding table to contain the Base 16 encoding alphabet ([appendix](#Base-16-Encoding-Alphabet))
+1. We create our encoding table to contain the Base 16 encoding alphabet ([appendix](#section-ti2tf4nvf37dsmbknjghiqotuvuriqkl))
 2. We handle the empty case. If we have an empty binary, we return an empty binary
 3. Here we pattern match on the first and second 4 bits of our input, look up their encoding values, and concatenate the values with the result of a recursive call to encode.
 4. We define our decoding table to lookup values based on the possible ASCII code points.
@@ -920,7 +1111,8 @@ ExUnit.run()
 ```
 
 ## Phew!
-That was a lot. To put this exercise into perspective, our largest module ([Base32](#Base-32)) was 86 lines of code. If you compare this to a [Swift implementation](https://github.com/norio-nomura/Base32/blob/master/Sources/Base32/Base32.swift) of Base 32, it's encode function is 84 lines lines of code and it's decode function is 118 lines of code. I think this is a testament of Elixir's ability to be both expressive and concise for solving problems down to the level of manipulating binary data.
+
+That was a lot. To put this exercise into perspective, our largest module ([Base32](#section-uuda4cwtcfaccathpigwd5yhtdqksu44)) was 86 lines of code. If you compare this to a [Swift implementation](https://github.com/norio-nomura/Base32/blob/master/Sources/Base32/Base32.swift) of Base 32, it's encode function is 84 lines lines of code and it's decode function is 118 lines of code. I think this is a testament of Elixir's ability to be both expressive and concise for solving problems down to the level of manipulating binary data.
 
 If you made it this far you probably noticed that once we defined our `Base64` module, implementing the rest of the specification was largely repeating the same patterns but for the specific implementations of the subsequent encoding specifications. Working with binary data in this manner may take some getting used to, but I think it is one of the more powerful features of Elixir.
 
